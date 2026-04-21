@@ -153,9 +153,9 @@ func (*localRateLimit) patchRoute(route *routev3.Route, irRoute *ir.HTTPRoute, h
 	localRl := &localrlv3.LocalRateLimit{
 		StatPrefix: localRateLimitFilterStatPrefix,
 		TokenBucket: &typev3.TokenBucket{
-			MaxTokens: local.Default.Requests,
+			MaxTokens: uint32(local.Default.Requests),
 			TokensPerFill: &wrapperspb.UInt32Value{
-				Value: local.Default.Requests,
+				Value: uint32(local.Default.Requests),
 			},
 			FillInterval: ratelimit.UnitToDuration(local.Default.Unit),
 		},
@@ -240,9 +240,9 @@ func buildRouteLocalRateLimits(local *ir.LocalRateLimit) (
 			descriptors = append(descriptors, &rlv3.LocalRateLimitDescriptor{
 				Entries: descriptorEntries,
 				TokenBucket: &typev3.TokenBucket{
-					MaxTokens: rule.Limit.Requests,
+					MaxTokens: uint32(rule.Limit.Requests),
 					TokensPerFill: &wrapperspb.UInt32Value{
-						Value: rule.Limit.Requests,
+						Value: uint32(rule.Limit.Requests),
 					},
 					FillInterval: ratelimit.UnitToDuration(rule.Limit.Unit),
 				},

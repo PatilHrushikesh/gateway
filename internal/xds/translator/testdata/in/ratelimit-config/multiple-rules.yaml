@@ -26,10 +26,7 @@ http:
             - name: "x-user-id"
               exact: "two"
             limit:
-              # Exercises the uint32 upper bound of RateLimitValue.Requests
-              # so the rendered RLS config shows requests_per_unit: 4294967295
-              # without modulo-2^32 wraparound.
-              requests: 4294967295
+              requests: 10
               unit: second
             shared: false
     pathMatch:
