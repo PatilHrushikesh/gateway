@@ -1653,6 +1653,73 @@ spec:
                       - 511
                       format: int32
                       type: integer
+                    when:
+                      description: |-
+                        When defines an optional condition that gates execution of this ExtProc filter.
+                        If set, the filter is only invoked for requests that match the condition; otherwise
+                        the filter is skipped and the request continues down the filter chain unmodified.
+                        If unset, the filter always runs (default behavior).
+
+                        The condition is evaluated by Envoy on the request headers available at the point
+                        this filter runs in the chain. It cannot observe headers that are added by a later
+                        filter (including a body-parsing external processor).
+                      properties:
+                        headers:
+                          description: |-
+                            Headers is the list of request header conditions that must all match for the
+                            ExtProc filter to be executed.
+                          items:
+                            description: |-
+                              ExtProcHeaderMatch specifies how to match against a single request header.
+                              Exactly one of `present` or `value` must be set.
+                            properties:
+                              name:
+                                description: Name of the HTTP header. Matching is
+                                  case-insensitive.
+                                maxLength: 256
+                                minLength: 1
+                                type: string
+                              present:
+                                description: |-
+                                  Present, when true, matches if the header exists regardless of its value.
+                                  When false, matches if the header is absent.
+                                type: boolean
+                              value:
+                                description: |-
+                                  Value matches against the header value using the configured string match semantics
+                                  (Exact, Prefix, Suffix, or RegularExpression).
+                                properties:
+                                  type:
+                                    default: Exact
+                                    description: Type specifies how to match against
+                                      a string.
+                                    enum:
+                                    - Exact
+                                    - Prefix
+                                    - Suffix
+                                    - RegularExpression
+                                    type: string
+                                  value:
+                                    description: Value specifies the string value
+                                      that the match must have.
+                                    maxLength: 1024
+                                    minLength: 1
+                                    type: string
+                                required:
+                                - value
+                                type: object
+                            required:
+                            - name
+                            type: object
+                            x-kubernetes-validations:
+                            - message: exactly one of present or value must be specified
+                              rule: has(self.present) != has(self.value)
+                          maxItems: 16
+                          minItems: 1
+                          type: array
+                      required:
+                      - headers
+                      type: object
                   type: object
                   x-kubernetes-validations:
                   - message: BackendRefs must be used, backendRef is not supported.

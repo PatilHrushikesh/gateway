@@ -935,6 +935,22 @@ func (t *Translator) buildExtProc(
 		}
 	}
 
+	if extProc.When != nil {
+		when := &ir.ExtProcWhen{
+			Headers: make([]ir.ExtProcHeaderMatch, 0, len(extProc.When.Headers)),
+		}
+		for i := range extProc.When.Headers {
+			h := extProc.When.Headers[i]
+			when.Headers = append(when.Headers, ir.ExtProcHeaderMatch{
+				// Envoy stores request header names lowercased; normalize for exact name lookup.
+				Name:    strings.ToLower(h.Name),
+				Present: h.Present,
+				Value:   h.Value,
+			})
+		}
+		extProcIR.When = when
+	}
+
 	return extProcIR, err
 }
 

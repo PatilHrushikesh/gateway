@@ -3717,6 +3717,31 @@ type ExtProc struct {
 	// or cannot be reached. Defaults to 500 Internal Server Error.
 	// +optional
 	StatusOnError *int32 `json:"statusOnError,omitempty" yaml:"statusOnError,omitempty"`
+
+	// When defines an optional condition that gates execution of this ExtProc filter.
+	// If set, the filter is wrapped in an Envoy match-delegate/composite filter and is
+	// only invoked for requests matching the condition. If unset, the filter always runs.
+	// +optional
+	When *ExtProcWhen `json:"when,omitempty" yaml:"when,omitempty"`
+}
+
+// ExtProcWhen defines a condition that gates execution of an ExtProc filter.
+// All the specified header matches must match (AND semantics) for the filter to run.
+// +k8s:deepcopy-gen=true
+type ExtProcWhen struct {
+	// Headers is the list of request header conditions that must all match.
+	Headers []ExtProcHeaderMatch `json:"headers,omitempty" yaml:"headers,omitempty"`
+}
+
+// ExtProcHeaderMatch specifies how to match against a single request header.
+// +k8s:deepcopy-gen=true
+type ExtProcHeaderMatch struct {
+	// Name of the HTTP header. Expected to be normalized to lowercase by the translator.
+	Name string `json:"name" yaml:"name"`
+	// Present, when set, matches on header presence (true) or absence (false), regardless of value.
+	Present *bool `json:"present,omitempty" yaml:"present,omitempty"`
+	// Value matches against the header value.
+	Value *egv1a1.StringMatch `json:"value,omitempty" yaml:"value,omitempty"`
 }
 
 // Lua holds the information associated with Lua extensions

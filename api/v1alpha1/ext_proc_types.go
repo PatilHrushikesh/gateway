@@ -97,6 +97,18 @@ type ExtProc struct {
 	// +optional
 	ProcessingMode *ExtProcProcessingMode `json:"processingMode,omitempty"`
 
+	// When defines an optional condition that gates execution of this ExtProc filter.
+	// If set, the filter is only invoked for requests that match the condition; otherwise
+	// the filter is skipped and the request continues down the filter chain unmodified.
+	// If unset, the filter always runs (default behavior).
+	//
+	// The condition is evaluated by Envoy on the request headers available at the point
+	// this filter runs in the chain. It cannot observe headers that are added by a later
+	// filter (including a body-parsing external processor).
+	//
+	// +optional
+	When *ExtProcWhen `json:"when,omitempty"`
+
 	// Metadata defines options related to the sending and receiving of dynamic metadata.
 	// These options define which metadata namespaces would be sent to the processor and which dynamic metadata
 	// namespaces the processor would be permitted to emit metadata to.
@@ -114,6 +126,41 @@ type ExtProc struct {
 	// +optional
 	// +kubebuilder:validation:Enum=400;401;402;403;404;405;406;407;408;409;410;411;412;413;414;415;416;417;421;422;423;424;426;428;429;431;500;501;502;503;504;505;506;507;508;510;511
 	StatusOnError *int32 `json:"statusOnError,omitempty"`
+}
+
+// ExtProcWhen defines a condition that gates execution of an ExtProc filter.
+// All the specified header matches must match (AND semantics) for the filter to run.
+type ExtProcWhen struct {
+	// Headers is the list of request header conditions that must all match for the
+	// ExtProc filter to be executed.
+	//
+	// +kubebuilder:validation:MinItems=1
+	// +kubebuilder:validation:MaxItems=16
+	Headers []ExtProcHeaderMatch `json:"headers"`
+}
+
+// ExtProcHeaderMatch specifies how to match against a single request header.
+// Exactly one of `present` or `value` must be set.
+//
+// +kubebuilder:validation:XValidation:rule="has(self.present) != has(self.value)",message="exactly one of present or value must be specified"
+type ExtProcHeaderMatch struct {
+	// Name of the HTTP header. Matching is case-insensitive.
+	//
+	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:MaxLength=256
+	Name string `json:"name"`
+
+	// Present, when true, matches if the header exists regardless of its value.
+	// When false, matches if the header is absent.
+	//
+	// +optional
+	Present *bool `json:"present,omitempty"`
+
+	// Value matches against the header value using the configured string match semantics
+	// (Exact, Prefix, Suffix, or RegularExpression).
+	//
+	// +optional
+	Value *StringMatch `json:"value,omitempty"`
 }
 
 // ExtProcMetadata defines options related to the sending and receiving of dynamic metadata to and from the
