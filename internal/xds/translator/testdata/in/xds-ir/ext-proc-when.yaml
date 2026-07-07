@@ -1,0 +1,81 @@
+http:
+  - address: 0.0.0.0
+    hostnames:
+      - '*'
+    name: envoy-gateway/gateway-1/http
+    path:
+      escapedSlashesAction: UnescapeAndRedirect
+      mergeSlashes: true
+    port: 10080
+    routes:
+      - destination:
+          name: httproute/default/httproute-1/rule/0
+          settings:
+            - addressType: IP
+              endpoints:
+                - host: 7.7.7.7
+                  port: 8080
+              protocol: HTTP
+              weight: 1
+              name: httproute/default/httproute-1/rule/0/backend/0
+        envoyExtensions:
+          extProcs:
+            - name: envoyextensionpolicy/default/policy-when-present/extproc/0
+              failOpen: true
+              messageTimeout: 5s
+              requestHeaderProcessing: true
+              requestBodyProcessingMode: Buffered
+              authority: grpc-backend.default:9000
+              when:
+                headers:
+                  - name: add-new-extproc
+                    present: true
+              destination:
+                name: envoyextensionpolicy/default/policy-when-present/0/grpc-backend
+                settings:
+                  - protocol: GRPC
+                    weight: 1
+                    name: envoyextensionpolicy/default/policy-when-present/0/grpc-backend/backend/0
+        hostname: gateway.envoyproxy.io
+        isHTTP2: false
+        name: httproute/default/httproute-1/rule/0/match/0/gateway_envoyproxy_io
+        pathMatch:
+          distinct: false
+          name: ""
+          prefix: /foo
+      - destination:
+          name: httproute/default/httproute-2/rule/0
+          settings:
+            - addressType: IP
+              endpoints:
+                - host: 7.7.7.7
+                  port: 8080
+              protocol: HTTP
+              weight: 1
+              name: httproute/default/httproute-2/rule/0/backend/0
+        envoyExtensions:
+          extProcs:
+            - name: envoyextensionpolicy/default/policy-when-value/extproc/0
+              failOpen: false
+              messageTimeout: 5s
+              requestHeaderProcessing: true
+              authority: grpc-backend-2.default:9000
+              when:
+                headers:
+                  - name: x-route-variant
+                    value:
+                      type: Exact
+                      value: canary
+              destination:
+                name: envoyextensionpolicy/default/policy-when-value/0/grpc-backend-2
+                settings:
+                  - protocol: GRPC
+                    weight: 1
+                    name: envoyextensionpolicy/default/policy-when-value/0/grpc-backend-2/backend/0
+        hostname: gateway.envoyproxy.io
+        isHTTP2: false
+        name: httproute/default/httproute-2/rule/0/match/0/gateway_envoyproxy_io
+        pathMatch:
+          distinct: false
+          name: ""
+          prefix: /bar

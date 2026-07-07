@@ -22,6 +22,7 @@ import (
 	typev3 "github.com/envoyproxy/go-control-plane/envoy/type/v3"
 	"google.golang.org/protobuf/types/known/anypb"
 	"google.golang.org/protobuf/types/known/durationpb"
+	"k8s.io/utils/ptr"
 
 	egv1a1 "github.com/envoyproxy/gateway/api/v1alpha1"
 	"github.com/envoyproxy/gateway/internal/ir"
@@ -90,14 +91,28 @@ func buildHCMExtProcFilter(extProc *ir.ExtProc) (*hcmv3.HttpFilter, error) {
 	// When a `when` condition is set, wrap the ext_proc filter in an ExtensionWithMatcher
 	// (match-delegate/composite) so Envoy only executes it for requests matching the header
 	// condition. The decision is made per-request at this filter's position in the chain,
-	// independent of route selection. Route scoping is still handled by the per-route enable
-	// in patchRoute, so the filter remains disabled by default at the HCM level.
+	// independent of route selection.
+	//
+	// Such a filter is left ENABLED (listener-active) at the HCM level rather than disabled +
+	// per-route-enabled. This decouples activation from the route Envoy selects, so the
+	// header matcher still gates execution correctly even when the targeted HTTPRoute is
+	// shadowed by another route or when clearRouteCache() re-routes the request mid-chain
+	// (see Envoy issue #44739). The trade-off is that the filter is evaluated for every
+	// request on the listener; the matcher makes it a no-op unless the header condition holds.
 	if extProc.When != nil {
 		wrappedAny, err := buildExtProcMatchDelegate(extProc, extAuthAny)
 		if err != nil {
 			return nil, err
 		}
 		extAuthAny = wrappedAny
+
+		return &hcmv3.HttpFilter{
+			Name:     extProcFilterName(extProc),
+			Disabled: false,
+			ConfigType: &hcmv3.HttpFilter_TypedConfig{
+				TypedConfig: extAuthAny,
+			},
+		}, nil
 	}
 
 	// All extproc filters for all Routes are aggregated on HCM and disabled by default
@@ -381,6 +396,15 @@ func (*extProc) patchRoute(route *routev3.Route, irRoute *ir.HTTPRoute, _ *ir.HT
 
 	for i := range irRoute.EnvoyExtensions.ExtProcs {
 		ep := &irRoute.EnvoyExtensions.ExtProcs[i]
+
+		// A `when`-gated ext_proc is listener-active (enabled at the HCM level) so its
+		// header matcher can gate execution independent of route selection. Skip the
+		// per-route enable: it is unnecessary, and an empty route-level FilterConfig on a
+		// composite/ExtensionWithMatcher filter would clobber the matcher.
+		if ep.When != nil {
+			continue
+		}
+
 		filterName := extProcFilterName(ep)
 		if err := enableFilterOnRoute(route, filterName, &routev3.FilterConfig{
 			Config: &anypb.Any{},
