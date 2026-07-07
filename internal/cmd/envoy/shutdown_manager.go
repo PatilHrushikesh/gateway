@@ -130,9 +130,22 @@ func Shutdown(drainTimeout, minDrainDuration time.Duration, exitAtConnections in
 	logger.Info(fmt.Sprintf("initiating drain with %.0f second minimum drain period and %.0f second timeout",
 		minDrainDuration.Seconds(), drainTimeout.Seconds()))
 
-	// Start failing active health checks
+	// Start failing active health checks. Marks the pod NotReady for new traffic
+	// via readiness probes and Service endpoint slices.
 	if err := postEnvoyAdminAPI("healthcheck/fail"); err != nil {
 		logger.Error(err, "error failing active health checks")
+	}
+
+	// Additionally, initiate Envoy's graceful listener drain. Without this,
+	// existing pooled HTTP/1.1 connections (and in-flight HTTP/2 streams) continue
+	// to be served by Envoy with no "Connection: close" / GOAWAY signal until the
+	// listeners are abruptly closed at SIGTERM, cutting all in-flight responses
+	// mid-stream. Calling /drain_listeners?graceful tells Envoy to start sending
+	// Connection: close on HTTP/1.1 responses and GOAWAY on HTTP/2, so clients
+	// gracefully close and reopen on the new pod. The polling loop below then
+	// observes real connection drain instead of timing out at the drainTimeout.
+	if err := postEnvoyAdminAPI("drain_listeners?graceful"); err != nil {
+		logger.Error(err, "error initiating graceful listener drain")
 	}
 
 	// Poll total connections from Envoy admin API until minimum drain period has
