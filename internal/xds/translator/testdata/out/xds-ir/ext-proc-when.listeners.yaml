@@ -1,0 +1,117 @@
+- address:
+    socketAddress:
+      address: 0.0.0.0
+      portValue: 10080
+  defaultFilterChain:
+    filters:
+    - name: envoy.filters.network.http_connection_manager
+      typedConfig:
+        '@type': type.googleapis.com/envoy.extensions.filters.network.http_connection_manager.v3.HttpConnectionManager
+        commonHttpProtocolOptions:
+          headersWithUnderscoresAction: REJECT_REQUEST
+        http2ProtocolOptions:
+          initialConnectionWindowSize: 1048576
+          initialStreamWindowSize: 65536
+          maxConcurrentStreams: 100
+        httpFilters:
+        - name: envoy.filters.http.ext_proc/envoyextensionpolicy/default/policy-when-present/extproc/0
+          typedConfig:
+            '@type': type.googleapis.com/envoy.extensions.common.matching.v3.ExtensionWithMatcher
+            extensionConfig:
+              name: envoy.filters.http.composite
+              typedConfig:
+                '@type': type.googleapis.com/envoy.extensions.filters.http.composite.v3.Composite
+            xdsMatcher:
+              matcherList:
+                matchers:
+                - onMatch:
+                    action:
+                      name: composite-action
+                      typedConfig:
+                        '@type': type.googleapis.com/envoy.extensions.filters.http.composite.v3.ExecuteFilterAction
+                        typedConfig:
+                          name: envoy.filters.http.ext_proc/envoyextensionpolicy/default/policy-when-present/extproc/0
+                          typedConfig:
+                            '@type': type.googleapis.com/envoy.extensions.filters.http.ext_proc.v3.ExternalProcessor
+                            failureModeAllow: true
+                            grpcService:
+                              envoyGrpc:
+                                authority: grpc-backend.default:9000
+                                clusterName: envoyextensionpolicy/default/policy-when-present/0/grpc-backend
+                              timeout: 10s
+                            messageTimeout: 5s
+                            processingMode:
+                              requestBodyMode: BUFFERED
+                              requestHeaderMode: SEND
+                              requestTrailerMode: SKIP
+                              responseHeaderMode: SKIP
+                              responseTrailerMode: SKIP
+                  predicate:
+                    singlePredicate:
+                      input:
+                        name: http_header
+                        typedConfig:
+                          '@type': type.googleapis.com/envoy.type.matcher.v3.HttpRequestHeaderMatchInput
+                          headerName: add-new-extproc
+                      valueMatch:
+                        safeRegex:
+                          googleRe2: {}
+                          regex: .*
+        - name: envoy.filters.http.ext_proc/envoyextensionpolicy/default/policy-when-value/extproc/0
+          typedConfig:
+            '@type': type.googleapis.com/envoy.extensions.common.matching.v3.ExtensionWithMatcher
+            extensionConfig:
+              name: envoy.filters.http.composite
+              typedConfig:
+                '@type': type.googleapis.com/envoy.extensions.filters.http.composite.v3.Composite
+            xdsMatcher:
+              matcherList:
+                matchers:
+                - onMatch:
+                    action:
+                      name: composite-action
+                      typedConfig:
+                        '@type': type.googleapis.com/envoy.extensions.filters.http.composite.v3.ExecuteFilterAction
+                        typedConfig:
+                          name: envoy.filters.http.ext_proc/envoyextensionpolicy/default/policy-when-value/extproc/0
+                          typedConfig:
+                            '@type': type.googleapis.com/envoy.extensions.filters.http.ext_proc.v3.ExternalProcessor
+                            grpcService:
+                              envoyGrpc:
+                                authority: grpc-backend-2.default:9000
+                                clusterName: envoyextensionpolicy/default/policy-when-value/0/grpc-backend-2
+                              timeout: 10s
+                            messageTimeout: 5s
+                            processingMode:
+                              requestHeaderMode: SEND
+                              requestTrailerMode: SKIP
+                              responseHeaderMode: SKIP
+                              responseTrailerMode: SKIP
+                  predicate:
+                    singlePredicate:
+                      input:
+                        name: http_header
+                        typedConfig:
+                          '@type': type.googleapis.com/envoy.type.matcher.v3.HttpRequestHeaderMatchInput
+                          headerName: x-route-variant
+                      valueMatch:
+                        exact: canary
+        - name: envoy.filters.http.router
+          typedConfig:
+            '@type': type.googleapis.com/envoy.extensions.filters.http.router.v3.Router
+            suppressEnvoyHeaders: true
+        mergeSlashes: true
+        normalizePath: true
+        pathWithEscapedSlashesAction: UNESCAPE_AND_REDIRECT
+        rds:
+          configSource:
+            ads: {}
+            resourceApiVersion: V3
+          routeConfigName: envoy-gateway/gateway-1/http
+        serverHeaderTransformation: PASS_THROUGH
+        statPrefix: http-10080
+        useRemoteAddress: true
+    name: envoy-gateway/gateway-1/http
+  maxConnectionsToAcceptPerSocketEvent: 1
+  name: envoy-gateway/gateway-1/http
+  perConnectionBufferLimitBytes: 32768

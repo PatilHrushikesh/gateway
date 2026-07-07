@@ -10,16 +10,23 @@ import (
 	"fmt"
 	"slices"
 
+	cncfv3 "github.com/cncf/xds/go/xds/core/v3"
+	matcherv3 "github.com/cncf/xds/go/xds/type/matcher/v3"
 	corev3 "github.com/envoyproxy/go-control-plane/envoy/config/core/v3"
 	routev3 "github.com/envoyproxy/go-control-plane/envoy/config/route/v3"
+	matchingv3 "github.com/envoyproxy/go-control-plane/envoy/extensions/common/matching/v3"
+	compositev3 "github.com/envoyproxy/go-control-plane/envoy/extensions/filters/http/composite/v3"
 	extprocv3 "github.com/envoyproxy/go-control-plane/envoy/extensions/filters/http/ext_proc/v3"
 	hcmv3 "github.com/envoyproxy/go-control-plane/envoy/extensions/filters/network/http_connection_manager/v3"
+	envoymatcherv3 "github.com/envoyproxy/go-control-plane/envoy/type/matcher/v3"
 	typev3 "github.com/envoyproxy/go-control-plane/envoy/type/v3"
 	"google.golang.org/protobuf/types/known/anypb"
 	"google.golang.org/protobuf/types/known/durationpb"
+	"k8s.io/utils/ptr"
 
 	egv1a1 "github.com/envoyproxy/gateway/api/v1alpha1"
 	"github.com/envoyproxy/gateway/internal/ir"
+	"github.com/envoyproxy/gateway/internal/utils/proto"
 	"github.com/envoyproxy/gateway/internal/xds/types"
 )
 
@@ -81,6 +88,33 @@ func buildHCMExtProcFilter(extProc *ir.ExtProc) (*hcmv3.HttpFilter, error) {
 		return nil, err
 	}
 
+	// When a `when` condition is set, wrap the ext_proc filter in an ExtensionWithMatcher
+	// (match-delegate/composite) so Envoy only executes it for requests matching the header
+	// condition. The decision is made per-request at this filter's position in the chain,
+	// independent of route selection.
+	//
+	// Such a filter is left ENABLED (listener-active) at the HCM level rather than disabled +
+	// per-route-enabled. This decouples activation from the route Envoy selects, so the
+	// header matcher still gates execution correctly even when the targeted HTTPRoute is
+	// shadowed by another route or when clearRouteCache() re-routes the request mid-chain
+	// (see Envoy issue #44739). The trade-off is that the filter is evaluated for every
+	// request on the listener; the matcher makes it a no-op unless the header condition holds.
+	if extProc.When != nil {
+		wrappedAny, err := buildExtProcMatchDelegate(extProc, extAuthAny)
+		if err != nil {
+			return nil, err
+		}
+		extAuthAny = wrappedAny
+
+		return &hcmv3.HttpFilter{
+			Name:     extProcFilterName(extProc),
+			Disabled: false,
+			ConfigType: &hcmv3.HttpFilter_TypedConfig{
+				TypedConfig: extAuthAny,
+			},
+		}, nil
+	}
+
 	// All extproc filters for all Routes are aggregated on HCM and disabled by default
 	// Per-route config is used to enable the relevant filters on appropriate routes
 	return &hcmv3.HttpFilter{
@@ -90,6 +124,154 @@ func buildHCMExtProcFilter(extProc *ir.ExtProc) (*hcmv3.HttpFilter, error) {
 			TypedConfig: extAuthAny,
 		},
 	}, nil
+}
+
+// buildExtProcMatchDelegate wraps the provided ext_proc config in an ExtensionWithMatcher
+// (backed by the composite filter) whose xDS matcher gates execution on the `when` condition.
+func buildExtProcMatchDelegate(extProc *ir.ExtProc, extProcAny *anypb.Any) (*anypb.Any, error) {
+	predicate, err := buildExtProcWhenPredicate(extProc.When)
+	if err != nil {
+		return nil, err
+	}
+
+	// On match, delegate to the wrapped ext_proc filter via a composite ExecuteFilterAction.
+	execAction := &compositev3.ExecuteFilterAction{
+		TypedConfig: &corev3.TypedExtensionConfig{
+			Name:        extProcFilterName(extProc),
+			TypedConfig: extProcAny,
+		},
+	}
+	execActionAny, err := anypb.New(execAction)
+	if err != nil {
+		return nil, err
+	}
+
+	matcher := &matcherv3.Matcher{
+		MatcherType: &matcherv3.Matcher_MatcherList_{
+			MatcherList: &matcherv3.Matcher_MatcherList{
+				Matchers: []*matcherv3.Matcher_MatcherList_FieldMatcher{
+					{
+						Predicate: predicate,
+						OnMatch: &matcherv3.Matcher_OnMatch{
+							OnMatch: &matcherv3.Matcher_OnMatch_Action{
+								Action: &cncfv3.TypedExtensionConfig{
+									Name:        "composite-action",
+									TypedConfig: execActionAny,
+								},
+							},
+						},
+					},
+				},
+			},
+		},
+		// No OnNoMatch: requests that do not match simply skip the ext_proc filter.
+	}
+
+	compositeAny, err := anypb.New(&compositev3.Composite{})
+	if err != nil {
+		return nil, err
+	}
+
+	ewm := &matchingv3.ExtensionWithMatcher{
+		ExtensionConfig: &corev3.TypedExtensionConfig{
+			Name:        "envoy.filters.http.composite",
+			TypedConfig: compositeAny,
+		},
+		XdsMatcher: matcher,
+	}
+
+	return anypb.New(ewm)
+}
+
+// buildExtProcWhenPredicate builds an xDS matcher predicate from the ExtProc `when` condition.
+// Multiple header matches are ANDed together.
+func buildExtProcWhenPredicate(when *ir.ExtProcWhen) (*matcherv3.Matcher_MatcherList_Predicate, error) {
+	predicates := make([]*matcherv3.Matcher_MatcherList_Predicate, 0, len(when.Headers))
+	for i := range when.Headers {
+		p, err := buildExtProcHeaderPredicate(&when.Headers[i])
+		if err != nil {
+			return nil, err
+		}
+		predicates = append(predicates, p)
+	}
+
+	switch len(predicates) {
+	case 0:
+		return nil, errors.New("extproc when condition must contain at least one header match")
+	case 1:
+		return predicates[0], nil
+	default:
+		return &matcherv3.Matcher_MatcherList_Predicate{
+			MatchType: &matcherv3.Matcher_MatcherList_Predicate_AndMatcher{
+				AndMatcher: &matcherv3.Matcher_MatcherList_Predicate_PredicateList{
+					Predicate: predicates,
+				},
+			},
+		}, nil
+	}
+}
+
+// buildExtProcHeaderPredicate converts a single header match into an xDS predicate, reusing the
+// HTTP header matcher helpers shared with the RBAC/authorization translator.
+func buildExtProcHeaderPredicate(h *ir.ExtProcHeaderMatch) (*matcherv3.Matcher_MatcherList_Predicate, error) {
+	headerMatchInput, err := proto.ToAnyWithValidation(&envoymatcherv3.HttpRequestHeaderMatchInput{
+		HeaderName: h.Name,
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	var (
+		stringMatcher *matcherv3.StringMatcher
+		invert        bool
+	)
+
+	switch {
+	case h.Present != nil:
+		// Match any value: HttpRequestHeaderMatchInput only produces input when the header exists,
+		// so a match-all value matcher is equivalent to a presence check.
+		stringMatcher = &matcherv3.StringMatcher{
+			MatchPattern: &matcherv3.StringMatcher_SafeRegex{
+				SafeRegex: &matcherv3.RegexMatcher{
+					Regex:      ".*",
+					EngineType: &matcherv3.RegexMatcher_GoogleRe2{GoogleRe2: &matcherv3.RegexMatcher_GoogleRE2{}},
+				},
+			},
+		}
+		// present == false means the header must be absent.
+		invert = !*h.Present
+	case h.Value != nil:
+		if stringMatcher, err = extProcValueToStringMatcher(h.Value); err != nil {
+			return nil, err
+		}
+	default:
+		return nil, fmt.Errorf("extproc header match %q must set either present or value", h.Name)
+	}
+
+	return wrapPredicateWithNot(buildHTTPHeaderSinglePredicate(headerMatchInput, stringMatcher), invert), nil
+}
+
+// extProcValueToStringMatcher maps an egv1a1.StringMatch to an xDS StringMatcher.
+func extProcValueToStringMatcher(sm *egv1a1.StringMatch) (*matcherv3.StringMatcher, error) {
+	switch ptr.Deref(sm.Type, egv1a1.StringMatchExact) {
+	case egv1a1.StringMatchExact:
+		return &matcherv3.StringMatcher{MatchPattern: &matcherv3.StringMatcher_Exact{Exact: sm.Value}}, nil
+	case egv1a1.StringMatchPrefix:
+		return &matcherv3.StringMatcher{MatchPattern: &matcherv3.StringMatcher_Prefix{Prefix: sm.Value}}, nil
+	case egv1a1.StringMatchSuffix:
+		return &matcherv3.StringMatcher{MatchPattern: &matcherv3.StringMatcher_Suffix{Suffix: sm.Value}}, nil
+	case egv1a1.StringMatchRegularExpression:
+		return &matcherv3.StringMatcher{
+			MatchPattern: &matcherv3.StringMatcher_SafeRegex{
+				SafeRegex: &matcherv3.RegexMatcher{
+					Regex:      sm.Value,
+					EngineType: &matcherv3.RegexMatcher_GoogleRe2{GoogleRe2: &matcherv3.RegexMatcher_GoogleRE2{}},
+				},
+			},
+		}, nil
+	default:
+		return nil, fmt.Errorf("unsupported extproc header match type %q", *sm.Type)
+	}
 }
 
 func extProcFilterName(extProc *ir.ExtProc) string {
@@ -214,6 +396,15 @@ func (*extProc) patchRoute(route *routev3.Route, irRoute *ir.HTTPRoute, _ *ir.HT
 
 	for i := range irRoute.EnvoyExtensions.ExtProcs {
 		ep := &irRoute.EnvoyExtensions.ExtProcs[i]
+
+		// A `when`-gated ext_proc is listener-active (enabled at the HCM level) so its
+		// header matcher can gate execution independent of route selection. Skip the
+		// per-route enable: it is unnecessary, and an empty route-level FilterConfig on a
+		// composite/ExtensionWithMatcher filter would clobber the matcher.
+		if ep.When != nil {
+			continue
+		}
+
 		filterName := extProcFilterName(ep)
 		if err := enableFilterOnRoute(route, filterName, &routev3.FilterConfig{
 			Config: &anypb.Any{},
